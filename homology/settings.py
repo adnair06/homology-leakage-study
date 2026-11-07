@@ -1,0 +1,23 @@
+from pathlib import Path
+
+DATA = Path("data")
+OUT = Path("results")
+
+MIN_LEN = 50
+MAX_LEN = 1500
+AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
+
+MIN_SEQ_ID = 0.3
+COVERAGE = 0.8
+COV_MODE = 0
+THREADS = 16
+
+SEED = 42
+N_FOLDS = 5
+CV_FOLDS = 3
+N_JOBS = 4
+C_COMP = [0.001, 0.01, 0.1, 1, 10, 100]
+C_KMER = [1, 10, 100, 1000, 10000]
+
+BANDS = [0, 0.3, 0.4, 0.5, 0.7, 0.9, 1.0]
+MIN_BAND_N = 30

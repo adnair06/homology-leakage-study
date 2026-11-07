@@ -1,0 +1,55 @@
+Loaded 115,868 reviewed UniProt proteins. Removed (enzymes / non-enzymes):
+   1,759  (0 / 1,759)  in the enzyme file but without an EC number
+     877  (378 / 499)  contain a non-standard residue (X, B, Z, U, O)
+   5,159  (405 / 4,754)  shorter than 50 residues
+   3,157  (1,074 / 2,083)  longer than 1,500 residues
+       6  (3 / 3)  identical sequences with conflicting labels (all copies)
+   3,606  (1,966 / 1,640)  extra copies of identical sequences
+Kept 101,304 proteins: 44,575 enzymes (44.0%) and 56,729 non-enzymes.
+
+MMseqs2 clustering (identity >= 30%, coverage >= 80%, cov-mode 0) gives 34,043 clusters.
+81.6% of proteins share a cluster with another protein, and 97.9% of multi-protein clusters hold only one class, so relatives almost always share a label.
+
+Both test sets hold 20,261 proteins (20%), 44.0% of them enzymes.
+Test proteins that share a cluster with a training protein: 78.9% in the random split, 0.0% in the clustered split.
+
+Nearest-neighbour lookup: each test protein takes the label of its most similar training protein
+(MMseqs2 search; proteins without a hit get the majority class).
+  random     MCC 0.953, accuracy 0.977, 93.0% of test proteins have a hit
+  clustered  MCC 0.799, accuracy 0.901, 79.3% of test proteins have a hit
+Test proteins with a training hit passing the clustering thresholds: 78.8% random, 18.0% clustered
+(clustering is greedy, so a few relatives still land in different clusters).
+
+Label agreement between a test protein and its nearest training protein, by sequence identity (n):
+  identity  random           clustered
+  0-30%     0.943 (894)      0.895 (4,258)
+  30-40%    0.957 (2,046)    0.938 (5,574)
+  40-50%    0.973 (2,023)    0.962 (2,839)
+  50-70%    0.991 (3,851)    0.978 (2,445)
+  70-90%    0.996 (4,899)    0.992 (718)
+  90-100%   0.997 (5,138)    0.965 (226)
+
+Logistic regression, test ROC-AUC. C is chosen by 3-fold cross-validation on the training set,
+grouped by cluster for the clustered split so that tuning never sees relatives of the validation proteins.
+  composition  random 0.759 (C = 1), clustered 0.743 (C = 0.1)
+  3-mer        random 0.886 (C = 1000), clustered 0.816 (C = 100)
+At the default C = 1 the 3-mer model underfits: it labels only 5,320 (random) and 5,196 (clustered)
+of the 35,660 training enzymes as enzymes. 3-mer frequencies are small, so the model needs weak regularisation (large C).
+
+Test ROC-AUC by sequence identity to the nearest training protein (n test proteins):
+  composition  random           clustered
+  no hit       0.785 (1,410)    0.786 (4,201)
+  0-30%        0.726 (894)      0.718 (4,258)
+  30-40%       0.740 (2,046)    0.754 (5,574)
+  40-50%       0.748 (2,023)    0.766 (2,839)
+  50-70%       0.760 (3,851)    0.690 (2,445)
+  70-90%       0.772 (4,899)    0.797 (718)
+  90-100%      0.759 (5,138)    0.738 (226)
+  3-mer        random           clustered
+  no hit       0.814 (1,410)    0.835 (4,201)
+  0-30%        0.769 (894)      0.809 (4,258)
+  30-40%       0.808 (2,046)    0.832 (5,574)
+  40-50%       0.833 (2,023)    0.826 (2,839)
+  50-70%       0.869 (3,851)    0.765 (2,445)
+  70-90%       0.918 (4,899)    0.880 (718)
+  90-100%      0.944 (5,138)    0.823 (226)

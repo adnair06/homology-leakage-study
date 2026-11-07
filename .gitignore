@@ -1,0 +1,11 @@
+/data/*.tsv
+archive/deepsol/data/
+results/*.parquet
+results/*.npz
+results/*.fasta
+results/search/
+results/cluster_*
+results/tmp/
+/runs/
+/explanations.md
+__pycache__/

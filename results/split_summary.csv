@@ -1,0 +1,3 @@
+split,n_train,n_test,pos_train,pos_test,test_clusters,shared_clusters,test_in_shared_cluster,test_len_median
+split_random,81043,20261,0.4400133262588996,0.44000789694486947,12045,8082,0.788509945214945,366.0
+split_cluster,81043,20261,0.4400133262588996,0.44000789694486947,6798,0,0.0,363.0
