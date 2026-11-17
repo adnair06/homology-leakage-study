@@ -1,0 +1,1502 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Homology Leakage in Protein Property Prediction</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="page">
+
+<!-- ============================ SIDEBAR ============================ -->
+<div id="sidebar" class="panel">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#question">The question</a></li>
+    <li><a href="#plan">How we plan to answer it</a></li>
+    <li><a href="#data">The dataset, and what we found in it</a></li>
+    <li><a href="#build">Building the experiment</a></li>
+    <li><a href="#first">The first result</a></li>
+    <li><a href="#why">Working out why</a></li>
+    <li><a href="#enzyme">A second dataset as a check</a></li>
+    <li><a href="#explorer">Explore the results</a></li>
+    <li><a href="#conclusions">Conclusions</a></li>
+    <li><a href="#limits">Limitations</a></li>
+    <li><a href="#repro">Reproducing this</a></li>
+  </ol>
+  <div class="meta">
+    ES&nbsp;335 project<br>
+    Abhishek Deepak Nair<br>
+    IIT Gandhinagar
+  </div>
+</div>
+
+<div id="main">
+
+<!-- ============================ MASTHEAD ============================ -->
+<div id="masthead">
+  <div class="bar">Machine Learning &middot; ES 335 &middot; Course Project</div>
+  <div class="inner">
+    <h1>Homology Leakage in Protein Property Prediction</h1>
+    <div class="sub">
+      An investigation into how similarity between training and test sequences
+      inflates the reported accuracy and other metrics of protein classifiers.
+    </div>
+    <div class="claim">
+      We ran one pipeline on two datasets. On enzyme classification, removing
+      similar proteins from the test set costs 7 points of ROC-AUC. On the
+      widely used DeepSol solubility benchmark it costs nothing at all, and the
+      reason turns out to be a problem in how that dataset was built.
+    </div>
+  </div>
+</div>
+
+<!-- ============================ 1. QUESTION ============================ -->
+<div class="panel" id="question">
+  <h2>1 &middot; The question</h2>
+  <div class="body">
+
+    <p>
+      A <strong>protein</strong> is a chain of smaller units called
+      <strong>amino acids</strong>. There are twenty standard kinds, and each one
+      is written as a single letter, so a protein can be stored as a string of
+      text such as <code>MKVLAHHG</code> and so on. The models in this project
+      read that string and predict a property of the protein.
+    </p>
+
+    <p class="lede">
+      Such a model could be doing one of two quite different things, and this
+      project is an attempt to measure which.
+    </p>
+
+    <p>
+      The first possibility is that the model has learned some
+      <strong>chemistry</strong>. Proteins with many electrically charged amino
+      acids and few long water-repelling stretches tend to stay dissolved in
+      water. A model that picks up on patterns like this will work on any
+      protein it is given, including one that is unlike anything it was trained
+      on.
+    </p>
+
+    <p>
+      The second possibility is that the model is doing a <strong>lookup</strong>.
+      If a test protein is 70% identical to a training protein that was soluble,
+      then predicting "soluble" will usually be correct. The model has not
+      learned anything about chemistry. It has learned to recognise proteins it
+      has already seen relatives of.
+    </p>
+
+    <p>
+      Both strategies score well when the test set is chosen at random, because
+      in a random test set most proteins do have a relative in the training
+      data. The two only give different answers on proteins that have no close
+      relative in training. For those, the lookup strategy has nothing to copy,
+      so its accuracy drops.
+    </p>
+
+    <h3>What this project measures</h3>
+
+    <p>
+      We measure the size of that drop. To do it we use a
+      <strong>nearest-neighbour baseline</strong>, which is a method that does no
+      learning at all. For each test protein it finds the most similar training
+      sequence and copies its label, which means it performs pure lookup based on
+      how similar proteins are to one another.
+    </p>
+
+    <p>
+      That baseline tells us the best a pure lookup approach can do. We can then
+      compare the trained models against it. If a model scores close to the
+      baseline, then most of what the model does is lookup. If it scores clearly
+      higher on proteins that have no close relative, then it has learned
+      something beyond recognising families.
+    </p>
+
+    <div class="note">
+      <span class="tag">The question, stated precisely</span>
+      How much of the measured performance of sequence-based protein classifiers
+      is explained by copying labels from similar training proteins, and do these
+      classifiers keep any predictive power for proteins that have no close
+      relatives in the training data?
+    </div>
+
+    <p>
+      One thing should be said at the start. Whatever survives after we remove
+      similar proteins is not automatically chemistry. It is whatever generalises
+      beyond family membership. That could be real biophysics, but it could also
+      be protein length, or some artefact of how the data was collected. The
+      controls described later exist to rule out the less interesting of those
+      explanations.
+    </p>
+
+  </div>
+</div>
+
+<!-- ============================ 2. PLAN ============================ -->
+<div class="panel" id="plan">
+  <h2>2 &middot; How we plan to answer it</h2>
+  <div class="body">
+
+    <p>
+      Two proteins are called <strong>homologous</strong> when they descend from
+      a common ancestor, which usually means their sequences are visibly similar.
+      We will use the word <strong>homolog</strong> for such a relative. The
+      whole question above is about what happens when homologs are present on
+      both sides of a train/test split, so the first thing we need is a way to
+      control that.
+    </p>
+
+    <h3>Idea one: build two splits that differ in only one way</h3>
+
+    <p>
+      A <strong>train/test split</strong> divides the data into a part the model
+      learns from and a part used to measure it. We build two different splits of
+      the same data.
+    </p>
+
+    <div class="splitfig">
+      <div>
+        <h4>Random split</h4>
+        <div class="inner">
+          <div class="fam"><span class="lbl">family A</span>
+            <span class="dot d-tr"></span><span class="dot d-te"></span><span class="dot d-tr"></span><span class="dot d-tr"></span></div>
+          <div class="fam"><span class="lbl">family B</span>
+            <span class="dot d-te"></span><span class="dot d-tr"></span><span class="dot d-tr"></span></div>
+          <div class="fam"><span class="lbl">family C</span>
+            <span class="dot d-tr"></span><span class="dot d-tr"></span><span class="dot d-te"></span></div>
+          <p>
+            Relatives are spread across the boundary. A test protein usually has
+            family members in training that it can be matched against.
+          </p>
+        </div>
+      </div>
+      <div>
+        <h4>Cluster-aware split</h4>
+        <div class="inner">
+          <div class="fam"><span class="lbl">family A</span>
+            <span class="dot d-tr"></span><span class="dot d-tr"></span><span class="dot d-tr"></span><span class="dot d-tr"></span></div>
+          <div class="fam"><span class="lbl">family B</span>
+            <span class="dot d-te"></span><span class="dot d-te"></span><span class="dot d-te"></span></div>
+          <div class="fam"><span class="lbl">family C</span>
+            <span class="dot d-tr"></span><span class="dot d-tr"></span><span class="dot d-tr"></span></div>
+          <p>
+            Whole families are sent to one side. A test protein has no close
+            relative available in training.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <p style="font-size:12px;color:#3d6b47">
+      <span class="dot d-tr" style="vertical-align:-3px"></span> training
+      &nbsp;&nbsp;
+      <span class="dot d-te" style="vertical-align:-3px"></span> test
+    </p>
+
+    <p>
+      If the two test sets are the same size and have the same mix of labels,
+      then any difference in score between them can be attributed to homology
+      rather than to one test set simply being bigger or differently balanced.
+    </p>
+
+    <h3>Idea two: measure what pure lookup achieves</h3>
+
+    <p>
+      The nearest-neighbour baseline described in section 1 is run on both
+      splits. Because it does nothing except copy a neighbour's label, its score
+      tells us how much of the task can be solved by similarity alone. Any
+      trained model can then be compared against that number instead of against
+      zero.
+    </p>
+
+    <h3>Idea three: report results by how similar each test protein is</h3>
+
+    <p>
+      A single average score hides a lot. For every test protein we also record
+      the similarity of its closest training protein, then group the test
+      proteins into bands by that similarity and score each band separately.
+      This shows whether performance depends on having a relative available, and
+      it is the view that most published results do not report.
+    </p>
+
+  </div>
+</div>
+
+<!-- ============================ 3. DATA ============================ -->
+<div class="panel" id="data">
+  <h2>3 &middot; The dataset, and what we found in it</h2>
+  <div class="body">
+
+    <p>
+      Our first task is predicting <strong>protein solubility</strong>, which is
+      whether a protein stays dissolved in water or clumps together when it is
+      produced in the laboratory. This matters practically, because a protein
+      that clumps cannot easily be studied or manufactured.
+    </p>
+
+    <p>
+      We use the dataset introduced by the DeepSol paper (Khurana et al., 2018),
+      obtained from <code>SeprotHub/Dataset-Solubility</code> on Hugging Face.
+      One row is one protein, with its amino acid sequence, a label of soluble
+      or insoluble, and a field marking which split it belongs to. There are
+      71,419 rows in total, divided into 62,478 for training, 6,942 for
+      validation and 1,999 for testing.
+    </p>
+
+    <h3>What the labels actually mean</h3>
+
+    <p>
+      The labels record whether a protein was produced in soluble form in
+      <em>E. coli</em> bacteria during large structural biology projects. This is
+      not the same as the protein being soluble in general. It is the outcome of
+      one particular experiment in one particular organism. Published work that
+      compared these labels against independently measured solubility found that
+      about 18.6% disagreed even for sequences that were completely identical.
+      Thus there is an upper limit on the accuracy any model can reach here, and
+      no modelling choice can get past it.
+    </p>
+
+    <h3>Two details of how the dataset was built</h3>
+
+    <p>
+      Before using the data we read how it was assembled, and two decisions turn
+      out to matter for everything that follows.
+    </p>
+
+    <p>
+      First, repeated or near-repeated sequences within the training data were
+      reduced using a tool called <strong>CD-HIT</strong>, which removes
+      sequences that are more than a given percentage identical to another
+      sequence already kept. The threshold used was 90%. This is a weak filter,
+      so many close relatives remain inside the training data.
+    </p>
+
+    <p>
+      Second, every sequence that was at least 30% identical to anything in the
+      official test set was deleted from training. The official test set is
+      therefore already controlled for homology.
+    </p>
+
+    <p>
+      This has a practical consequence for us. The effect we want to measure has
+      already been removed from the official test split, so we cannot measure it
+      there. We therefore work with the 69,420 training and validation sequences
+      as a single pool and build our own splits from it. The official test split
+      is kept aside as an external reference point.
+    </p>
+
+    <h3>Basic checks on the data</h3>
+
+    <p>
+      We checked the data before modelling. There are no exactly duplicated
+      sequences. The alphabet is exactly the twenty standard amino acids, with no
+      unusual characters. Sequence lengths run from 19 to 1,697 with a median of
+      275.
+    </p>
+
+    <p>
+      We also checked the balance of labels, which is the proportion of soluble
+      proteins. The training and validation parts are both 41.7% soluble, while
+      the official test part is 50.0% soluble. Someone balanced the test set
+      deliberately. This is worth knowing because accuracy can be compared
+      between two sets only when their label balance is similar.
+    </p>
+
+    <h3>What we found: two populations of His-tags</h3>
+
+    <p>
+      When proteins are produced in the laboratory, a short extra piece is often
+      attached to them so they can be purified afterwards. The most common is a
+      run of six or more <strong>histidine</strong> amino acids, written as a run
+      of the letter H, and known as a <strong>His-tag</strong>. It is not part of
+      the natural protein. It is added by the laboratory, and which version is
+      used depends on the laboratory and its protocol.
+    </p>
+
+    <p>
+      Searching for runs of six or more H characters finds 32,203 sequences,
+      which is 45% of the dataset. When we separate those by where the run sits,
+      two distinct groups appear, and they behave in opposite ways.
+    </p>
+
+    <table class="wide">
+      <thead><tr><th>Group</th><th>Sequences</th><th>Soluble</th></tr></thead>
+      <tbody>
+        <tr><th>Tag at the start of the sequence</th><td class="num">17,330</td><td class="num neg">16.4%</td></tr>
+        <tr><th>Tag at the end of the sequence</th><td class="num">14,850</td><td class="num pos">59.8%</td></tr>
+        <tr><th>Untagged, compared against the start group</th><td class="num">n/a</td><td class="num">50.2%</td></tr>
+        <tr><th>Untagged, compared against the end group</th><td class="num">n/a</td><td class="num">37.3%</td></tr>
+      </tbody>
+      <caption>
+        Only 7 sequences carry a tag at both ends. The tags are 6 residues long
+        in 17,258 cases, with 74 cases of 7, 8, 9 or 10. A model that notices
+        which end the histidines are on can separate the data into a 16% soluble
+        group and a 60% soluble group without using any protein chemistry.
+      </caption>
+    </table>
+
+    <p>
+      There is a possible biological explanation. A tag at the start sits where
+      the cell begins building the protein and may interfere with folding, while
+      a tag at the end is added once most of the protein has already formed. But
+      it is equally possible that the laboratories which preferred end tags were
+      working on easier proteins. Sequence data alone cannot separate those two
+      explanations. We therefore removed both kinds of tag before any modelling,
+      with a check that no sequence was reduced below 20 amino acids.
+    </p>
+
+    <h3>One thing we decided not to do</h3>
+
+    <p>
+      The original project proposal included adding 3,723 extra sequences from a
+      database called TargetTrack, chosen by matching them for similarity against
+      proteins already present. The aim was to increase the number of test
+      proteins that have a close relative available, since that is the effect we
+      want to measure. We dropped this, because every added sequence is labelled
+      soluble. Adding them would shift the label balance and would insert exactly
+      the kind of near-identical pairs whose influence we are trying to measure,
+      so we would end up measuring our own procedure.
+    </p>
+
+  </div>
+</div>
+
+<!-- ============================ 4. BUILD ============================ -->
+<div class="panel" id="build">
+  <h2>4 &middot; Building the experiment</h2>
+  <div class="body">
+
+    <h3>Grouping similar proteins together</h3>
+
+    <p>
+      To build a split that separates families, we first need to know which
+      proteins are related. We use <strong>MMseqs2</strong>, a tool that compares
+      protein sequences and groups similar ones together. We chose it over older
+      tools such as BLAST because it is fast enough to compare every sequence
+      against every other sequence at this scale.
+    </p>
+
+    <p>
+      Two sequences are placed in the same <strong>cluster</strong>, meaning the
+      same group of relatives, only if they pass two separate tests.
+    </p>
+
+    <ul>
+      <li>
+        <strong>Sequence identity</strong> is the percentage of positions that
+        match once the two sequences have been lined up against each other. We
+        require at least 30%.
+      </li>
+      <li>
+        <strong>Coverage</strong> is how much of each protein is involved in that
+        lining up. We require at least 80%, and we require it of both sequences
+        rather than just one.
+      </li>
+    </ul>
+
+    <p>
+      Both tests are needed. Identity on its own only describes the part that
+      lined up, and says nothing about how large that part was. Two proteins that
+      share one short region can reach high identity over that region while being
+      unrelated everywhere else. Requiring coverage as well removes those cases.
+      Requiring it of both sequences stops a short protein from matching simply
+      because it fits inside a much longer one.
+    </p>
+
+    <p>
+      We chose 30% identity because it is the same threshold the DeepSol authors
+      used when separating their own test set, so our split is at least as strict
+      as theirs. We chose 80% coverage because it is the MMseqs2 default and is
+      the value most commonly used in this literature.
+    </p>
+
+    <h3>Building the two splits</h3>
+
+    <p>
+      The cluster-aware split is built first, using
+      <code>StratifiedGroupKFold</code> from scikit-learn. This divides the data
+      into five equal parts while obeying two constraints: it never splits a
+      cluster across parts, and it keeps the proportion of soluble proteins
+      roughly equal in each part. We take one of the five parts as the test set,
+      giving an 80/20 division.
+    </p>
+
+    <p>
+      The random split is built afterwards, and we force its test set to have the
+      same number of proteins as the cluster-aware one. It is also
+      <strong>stratified</strong>, which means the proportion of soluble proteins
+      is kept the same as in the full pool. We build the cluster-aware split
+      first because it is the constrained one. Its size is determined by where
+      the cluster boundaries happen to fall, so the flexible split is the one
+      that should be made to match.
+    </p>
+
+    <table class="wide">
+      <thead><tr><th>Check</th><th>Random</th><th>Cluster-aware</th></tr></thead>
+      <tbody>
+        <tr><th>Test proteins</th><td class="num">13,885</td><td class="num">13,885</td></tr>
+        <tr><th>Proportion soluble</th><td class="num">0.41736</td><td class="num">0.41736</td></tr>
+        <tr><th>Clusters with members on both sides</th><td class="num">5,023</td><td class="num">0</td></tr>
+        <tr><th>Test proteins with a cluster-mate in training</th><td class="num">57.5%</td><td class="num">0%</td></tr>
+        <tr class="hl"><th>Test proteins whose closest training match reaches 30% identity and 80% coverage</th><td class="num">53.1%</td><td class="num">8.9%</td></tr>
+      </tbody>
+      <caption>
+        The two test sets are identical in size and label balance, so they differ
+        only in homology. The last row is measured by searching rather than by
+        cluster membership, and is the honest figure. Cluster-aware splitting
+        reduced close homology by about six times but not to zero, because
+        MMseqs2 clustering is greedy and does not compare every possible pair.
+      </caption>
+    </table>
+
+    <h3>Turning sequences into numbers</h3>
+
+    <p>
+      A model cannot read a string of letters directly, so each sequence is
+      converted into a list of numbers called <strong>features</strong>. We use
+      two different ways of doing this, chosen to differ in how much sequence
+      order they capture.
+    </p>
+
+    <ul>
+      <li>
+        <strong>Amino acid composition</strong> is the fraction of the sequence
+        made up by each of the twenty amino acids. This gives 20 numbers per
+        protein and ignores the order they appear in.
+      </li>
+      <li>
+        <strong>3-mer counts</strong> record how often each run of three
+        consecutive amino acids appears. There are 8,000 possible runs, so this
+        gives 8,000 numbers per protein and captures a small amount of local
+        order.
+      </li>
+    </ul>
+
+    <p>
+      We use all 8,000 possible 3-mers rather than selecting the most common
+      ones. The list of possible 3-mers is fixed by the alphabet before any data
+      is seen, so no information from the test set can leak in through the choice
+      of features. Most of those 8,000 numbers are zero for any given protein, so
+      the data is stored as a <strong>sparse matrix</strong>, which records only
+      the non-zero entries.
+    </p>
+
+    <p>
+      Both feature sets are divided by their own total, so that each protein's
+      numbers sum to one. This removes protein length from the features. Without
+      it, a long protein would have larger counts of everything simply because it
+      is long.
+    </p>
+
+    <h3>The models</h3>
+
+    <p>
+      We use <strong>logistic regression</strong>, which is a model that weights
+      each feature and adds the weights up to produce a probability. We use it
+      deliberately rather than something more powerful. Holding the model fixed
+      and weak means that any difference we see between the two splits can be
+      attributed to the split itself rather than to the model's capacity. The
+      cost of this choice is discussed in the limitations.
+    </p>
+
+    <p>
+      Logistic regression uses <strong>regularisation</strong>, which discourages
+      large weights to stop the model fitting noise. Its strength is controlled
+      by a value called C, where a smaller C means stronger discouragement. We
+      choose C by <strong>cross-validation</strong>, which splits the training
+      data into parts, trains on some and measures on the rest, and repeats. This
+      is done entirely inside the training set, so the test set plays no part in
+      choosing it.
+    </p>
+
+    <p>
+      On the cluster-aware split, the inner cross-validation also respects
+      clusters. If it did not, relatives would appear on both sides of the inner
+      folds and we would reintroduce the exact problem the split exists to
+      prevent, while choosing a setting for a project about that problem.
+    </p>
+
+    <h3>The decision threshold</h3>
+
+    <p>
+      Logistic regression outputs a probability between 0 and 1. To turn that
+      into a yes or no answer we need a <strong>threshold</strong>, and the usual
+      default is 0.5. We used that default and did not tune it. To check whether
+      that cost us anything, we swept every possible threshold afterwards and
+      found the one that gives the best score.
+    </p>
+
+    <table class="wide">
+      <thead>
+        <tr><th>Enzyme models</th><th>MCC at 0.5</th><th>Best possible MCC</th><th>At threshold</th></tr>
+      </thead>
+      <tbody>
+        <tr><th>Random split, 3-mer</th><td class="num">0.618</td><td class="num">0.620</td><td class="num">0.477</td></tr>
+        <tr><th>Cluster-aware split, 3-mer</th><td class="num">0.485</td><td class="num">0.500</td><td class="num">0.398</td></tr>
+        <tr><th>Random split, composition</th><td class="num">0.366</td><td class="num">0.398</td><td class="num">0.399</td></tr>
+        <tr><th>Cluster-aware split, composition</th><td class="num">0.348</td><td class="num">0.389</td><td class="num">0.362</td></tr>
+      </tbody>
+      <caption>
+        The gain from moving the threshold is between 0.002 and 0.04. The reason
+        it is small is that the models are already producing roughly the right
+        number of positive predictions. At a 0.5 cut the 3-mer model calls 44.2%
+        of proteins positive, and the true figure is 44.0%.
+      </caption>
+    </table>
+
+    <p>
+      The best values above were found using the test set, which is not a
+      legitimate way to choose a threshold in practice. They are an upper limit
+      rather than a result. We report them because even granting the models that
+      advantage, the difference between the two splits barely moves. For the
+      3-mer model the gap is 0.133 at the default threshold and 0.120 at the best
+      possible one. Thus there is no real benefit to be had from a different
+      threshold here, and our main scores are unaffected by the choice.
+    </p>
+
+    <p>
+      One further point. The main scores we report are ROC-AUC and PR-AUC, which
+      are explained in the next section. Both are calculated across all possible
+      thresholds at once, so they do not depend on this choice at all. Only
+      accuracy, F1 and MCC do.
+    </p>
+
+  </div>
+</div>
+
+<!-- ============================ 5. FIRST RESULT ============================ -->
+<div class="panel" id="first">
+  <h2>5 &middot; The first result</h2>
+  <div class="body">
+
+    <h3>How we score the models</h3>
+
+    <p>
+      Before the numbers, a short description of each measure we report, since
+      they answer different questions.
+    </p>
+
+    <ul>
+      <li>
+        <strong>Accuracy</strong> is the fraction of predictions that are
+        correct. It is easy to read but misleading when one label is more common
+        than the other, because always guessing the common label already scores
+        well.
+      </li>
+      <li>
+        <strong>Balanced accuracy</strong> averages the accuracy on each label
+        separately, which removes that problem.
+      </li>
+      <li>
+        <strong>F1</strong> combines how many of the predicted positives were
+        right with how many of the true positives were found.
+      </li>
+      <li>
+        <strong>MCC</strong>, the Matthews correlation coefficient, measures
+        agreement between predictions and truth on a scale from &minus;1 to 1,
+        where 0 means no relationship at all. It is the measure least affected by
+        unequal label counts, so we rely on it most.
+      </li>
+      <li>
+        <strong>ROC-AUC</strong> is the probability that the model gives a
+        randomly chosen positive protein a higher score than a randomly chosen
+        negative one. A value of 0.5 means the ordering is no better than chance.
+        It does not depend on where the decision threshold is placed.
+      </li>
+      <li>
+        <strong>PR-AUC</strong> is similar but focuses on performance on the
+        positive label, which makes it more informative when positives are rare.
+      </li>
+    </ul>
+
+    <p>
+      For reference, the simplest possible model always predicts the more common
+      label. On the solubility pool that gives 58.3% accuracy and an MCC of 0.
+      Any useful model must beat that.
+    </p>
+
+    <h3>The comparison</h3>
+
+    <p>
+      Each model was trained and measured on both splits. The quantity we care
+      about is the gap between them, because that is how much of the random-split
+      score depended on test proteins having relatives available.
+    </p>
+
+    <table class="wide">
+      <thead>
+        <tr><th>Solubility, ROC-AUC</th><th>Random</th><th>Cluster-aware</th><th>Gap</th></tr>
+      </thead>
+      <tbody>
+        <tr><th>3-mer logistic regression</th><td class="num">0.6657</td><td class="num">0.6668</td><td class="num neg">&minus;0.001</td></tr>
+        <tr><th>Composition logistic regression</th><td class="num">0.6208</td><td class="num">0.6159</td><td class="num">0.005</td></tr>
+      </tbody>
+      <caption>
+        Lookup baseline, measured by MCC since it produces yes/no answers rather
+        than probabilities: 0.195 on the random split and 0.178 on the
+        cluster-aware split, a gap of 0.018.
+      </caption>
+    </table>
+
+    <p>
+      There is no gap. The 3-mer model is very slightly better on the harder
+      split. The lookup baseline, which is the method that should suffer most
+      when relatives are removed, barely moves either.
+    </p>
+
+    <p>
+      This is not the expected result. We removed homology from the test set, and
+      measured performance was unchanged. Either homology does not inflate
+      results on this task, or something is preventing us from seeing it.
+    </p>
+
+  </div>
+</div>
+
+<!-- ============================ 6. WHY ============================ -->
+<div class="panel" id="why">
+  <h2>6 &middot; Working out why</h2>
+  <div class="body">
+
+    <p>
+      To investigate, we looked at the assumption the whole idea rests on. Copying
+      a neighbour's label only works if similar proteins usually share a label. We
+      can check that directly. For every test protein we compare its label with
+      the label of its closest training protein, and group the results by how
+      similar that pair is.
+    </p>
+
+    <table class="wide">
+      <thead><tr><th>Identity band</th><th>Pairs</th><th>Share the same label</th></tr></thead>
+      <tbody>
+        <tr><th>Below 30%</th><td class="num">1,259</td><td class="num">0.617</td></tr>
+        <tr><th>30 to 40%</th><td class="num">2,766</td><td class="num">0.652</td></tr>
+        <tr><th>40 to 50%</th><td class="num">2,034</td><td class="num">0.681</td></tr>
+        <tr><th>50 to 70%</th><td class="num">2,479</td><td class="num">0.714</td></tr>
+        <tr><th>70 to 90%</th><td class="num">1,526</td><td class="num">0.749</td></tr>
+        <tr class="hl"><th>Above 90%</th><td class="num">1,491</td><td class="num neg">0.099</td></tr>
+      </tbody>
+      <caption>
+        Agreement rises steadily across five bands, exactly as biology predicts,
+        and then drops from 75% to 10% in a single step.
+      </caption>
+    </table>
+
+    <p>
+      The first five rows behave normally. More similar proteins more often share
+      a label, which is why homology transfer works at all. The last row does
+      not. Among the most similar pairs, which are the ones where copying should
+      work best, the labels disagree about 90% of the time.
+    </p>
+
+    <p>
+      We checked individual pairs to confirm this is not an error in our code.
+      Test protein 15610 and training protein 27560 have sequences that are
+      character for character identical, and one is labelled soluble while the
+      other is labelled insoluble. Across the 1,491 proteins in this band, the
+      lookup baseline achieves an MCC of &minus;0.80, meaning its predictions are
+      close to being systematically inverted.
+    </p>
+
+    <div class="note">
+      <span class="tag">The most likely explanation</span>
+      Random mistakes in labelling would produce agreement near 50%, spread
+      evenly across all bands. What we see instead is a sharp change at one
+      specific point. That point is 90% identity, which is exactly the threshold
+      DeepSol used when removing near-duplicate sequences with CD-HIT. If that
+      removal was applied to each label separately, then pairs of near-identical
+      sequences sharing a label would have been reduced to one representative,
+      while pairs with opposing labels would not look like duplicates and would
+      survive. We state this as a coincidence in position rather than a proven
+      cause, since the preprocessing code is not available to check.
+    </div>
+
+    <p>
+      This also explains why we did not try to repair the problem by adding
+      sequences, as the original proposal suggested. Augmenting the data would
+      have filled that band back in, but every added sequence carries the same
+      label, so the restored agreement would come from our own choice of what to
+      add rather than from biology.
+    </p>
+
+    <h3>Why the two splits ended up equal</h3>
+
+    <p>
+      With this in hand, the result in section 5 can be explained. Two effects of
+      similar size work against each other.
+    </p>
+
+    <p>
+      <strong>The cluster-aware split still contains a lot of partial homology.</strong>
+      3,601 of its test proteins still have a closest match in the 30 to 40%
+      band. Our clustering required 30% identity and 80% coverage together, so
+      pairs that match strongly across part of their length were never grouped
+      and were free to end up on opposite sides.
+    </p>
+
+    <p>
+      <strong>The random split contains three times as many of the unreliable pairs.</strong>
+      1,491 of its test proteins sit above 90% identity, against 445 in the
+      cluster-aware split. This happens because clustering sends near-identical
+      proteins to the same side by construction. Those proteins score at chance
+      level, which pulls the random split's average down by roughly as much as
+      the extra homology pushes it up.
+    </p>
+
+    <p>
+      Thus the result is not that nothing happened. Two measurable effects of
+      comparable size acted in opposite directions. Removing close homology also
+      removed most of the unreliable labels, because they were the same proteins.
+    </p>
+
+  </div>
+</div>
+
+<!-- ============================ 7. ENZYME ============================ -->
+<div class="panel" id="enzyme">
+  <h2>7 &middot; A second dataset as a check</h2>
+  <div class="body">
+
+    <p>
+      At this point we have a result we cannot interpret. We do not know whether
+      our method failed to detect homology inflation, or whether this dataset
+      cannot show it. The way to separate those is to run the identical pipeline
+      on a dataset where the labels are known to be reliable. If the effect
+      appears there, the method works.
+    </p>
+
+    <h3>The second task</h3>
+
+    <p>
+      We chose to predict whether a protein is an <strong>enzyme</strong>, which
+      is a protein that speeds up a chemical reaction. Many proteins are not
+      enzymes, so this is a sensible yes or no question.
+    </p>
+
+    <p>
+      The labels come from <strong>UniProt</strong>, a curated protein database.
+      A protein that has been shown to catalyse a reaction is given an
+      <strong>EC number</strong>, which is a code identifying the reaction. If a
+      protein has one, it is an enzyme.
+    </p>
+
+    <p>
+      We took positives from proteins whose catalytic activity has experimental
+      support, using the query
+      <code>(reviewed:true) AND (cc_catalytic_activity_exp:*)</code>, giving
+      50,160 entries. We required experimental support because many EC numbers in
+      the database were assigned by copying them from a similar protein, and
+      using those would mean measuring the database's own use of homology rather
+      than biology.
+    </p>
+
+    <p>
+      Negatives came from
+      <code>(reviewed:true) NOT (ec:*) AND (cc_function:*) AND (existence:1)</code>,
+      giving 65,708 entries. These are proteins with no EC number that have a
+      described function and have actually been observed, rather than only
+      predicted from a gene sequence.
+    </p>
+
+    <p>
+      We then removed sequences shorter than 50 or longer than 1,500 amino
+      acids, and sequences containing non-standard characters. Sequences under 50
+      produce too few 3-mers to describe and are matched unreliably by search
+      tools. Sequences over 1,500 are usually several proteins joined together,
+      which breaks the coverage rule. The non-standard characters had to go
+      because two of them, U and O, appear almost only in enzymes, so keeping
+      them would hand the model part of the answer. This leaves
+      <strong>101,304 proteins at 44.0% enzyme</strong>.
+    </p>
+
+    <h3>The same check on label reliability</h3>
+
+    <p>
+      Running the diagnostic from section 6 on this data gives a very different
+      picture.
+    </p>
+
+    <div class="chartwrap">
+      <canvas id="chart2" height="300"></canvas>
+    </div>
+    <div class="legend" id="legend2"></div>
+    <div class="readout" id="read2"
+         data-idle="Both curves use the random split, where the bands contain the most proteins. Hover any point for the exact value.">
+    </div>
+
+    <table class="wide">
+      <thead>
+        <tr><th>Identity band</th><th>Enzyme, random</th><th>Enzyme, cluster-aware</th><th>Solubility, random</th></tr>
+      </thead>
+      <tbody>
+        <tr><th>Below 30%</th><td class="num">0.943</td><td class="num">0.895</td><td class="num">0.617</td></tr>
+        <tr><th>30 to 40%</th><td class="num">0.957</td><td class="num">0.938</td><td class="num">0.652</td></tr>
+        <tr><th>40 to 50%</th><td class="num">0.973</td><td class="num">0.962</td><td class="num">0.681</td></tr>
+        <tr><th>50 to 70%</th><td class="num">0.991</td><td class="num">0.978</td><td class="num">0.714</td></tr>
+        <tr><th>70 to 90%</th><td class="num">0.996</td><td class="num">0.992</td><td class="num">0.749</td></tr>
+        <tr class="hl"><th>Above 90%</th><td class="num pos">0.998</td><td class="num">0.965</td><td class="num neg">0.099</td></tr>
+      </tbody>
+      <caption>
+        Fraction of pairs sharing a label. On a normally built dataset,
+        near-identical proteins agree 99.8% of the time. On DeepSol they agree
+        9.9% of the time. The pipeline and the thresholds are identical in both
+        cases.
+      </caption>
+    </table>
+
+    <h3>The gap appears</h3>
+
+    <p>
+      With reliable labels, removing homology has the expected effect.
+    </p>
+
+    <table class="wide">
+      <thead>
+        <tr><th>Enzyme task</th><th>Random</th><th>Cluster-aware</th><th>Gap</th></tr>
+      </thead>
+      <tbody>
+        <tr class="hl"><th>Lookup baseline (MCC)</th><td class="num">0.953</td><td class="num">0.799</td><td class="num pos">0.154</td></tr>
+        <tr><th>3-mer logistic regression (ROC-AUC)</th><td class="num">0.886</td><td class="num">0.816</td><td class="num pos">0.070</td></tr>
+        <tr><th>Composition logistic regression (ROC-AUC)</th><td class="num">0.759</td><td class="num">0.743</td><td class="num">0.016</td></tr>
+      </tbody>
+    </table>
+
+    <p>
+      The 3-mer model loses 7 points of ROC-AUC when relatives are removed, and
+      the lookup baseline loses 0.154 of MCC. Thus the pipeline does detect
+      homology inflation when it is present, and the null result on solubility is
+      a property of that dataset rather than a failure of the method.
+    </p>
+
+    <h3>How much the gap varies between splits</h3>
+
+    <p>
+      The numbers above come from one particular division of the data. To check
+      how much that matters, we repeated the whole comparison on all five
+      divisions produced by the cross-validation procedure.
+    </p>
+
+    <table class="wide">
+      <thead>
+        <tr><th>ROC-AUC gap</th><th>Fold 1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>Mean</th><th>Spread</th></tr>
+      </thead>
+      <tbody>
+        <tr><th>3-mer</th><td class="num">0.070</td><td class="num">0.051</td><td class="num">0.063</td><td class="num">0.044</td><td class="num">0.046</td><td class="num pos">0.055</td><td class="num">0.011</td></tr>
+        <tr><th>Composition</th><td class="num">0.016</td><td class="num neg">&minus;0.002</td><td class="num">0.007</td><td class="num">0.002</td><td class="num neg">&minus;0.005</td><td class="num">0.004</td><td class="num">0.008</td></tr>
+      </tbody>
+      <caption>
+        Spread is the standard deviation across the five folds. Regularisation
+        strength was chosen once on the first fold and reused, rather than being
+        chosen again for each fold.
+      </caption>
+    </table>
+
+    <p>
+      Two things follow from this, and both of them matter.
+    </p>
+
+    <p>
+      The 3-mer result is real. All five folds show a positive gap, ranging from
+      0.044 to 0.070, with a mean of 0.055. However, the fold we reported above
+      is the largest of the five. The typical gap is therefore closer to 0.055
+      than to 0.070, and we should quote it that way.
+    </p>
+
+    <p>
+      The composition result is not real. Its gaps average 0.004 with a spread of
+      0.008, and two of the five folds are negative. The figure of 0.016 we
+      reported is again the most favourable fold. We cannot claim that the
+      composition model exploits homology at all.
+    </p>
+
+    <h3>The baseline beats the models</h3>
+
+    <p>
+      Comparing all three methods on the same measure gives a result worth
+      stating plainly.
+    </p>
+
+    <table class="wide">
+      <thead>
+        <tr><th>Enzyme task, MCC</th><th>Random</th><th>Cluster-aware</th></tr>
+      </thead>
+      <tbody>
+        <tr class="hl"><th>Lookup baseline</th><td class="num">0.953</td><td class="num">0.799</td></tr>
+        <tr><th>3-mer logistic regression</th><td class="num">0.618</td><td class="num">0.485</td></tr>
+        <tr><th>Composition logistic regression</th><td class="num">0.366</td><td class="num">0.348</td></tr>
+      </tbody>
+    </table>
+
+    <p>
+      Copying the label of the nearest training protein scores higher than either
+      trained model, on both splits, and it stays higher in every similarity band.
+      Enzyme function is strongly preserved between related proteins, a search
+      for the nearest relative exploits that almost perfectly, and logistic
+      regression on 3-mer counts is a poor substitute for it.
+    </p>
+
+    <div class="note">
+      <span class="tag">The exception, and it is the important one</span>
+      For test proteins with no detectable relative, the lookup baseline has
+      nothing to copy and falls back to guessing the common label. Its MCC is
+      exactly 0.000, meaning no relationship to the truth. The 3-mer model scores
+      0.357 on the random split and 0.461 on the cluster-aware one. Thus the
+      trained models do carry real signal that transfers to unfamiliar proteins.
+      It is simply worth less than homology wherever homology is available, and
+      this is the clearest view we have of the quantity the project set out to
+      isolate.
+    </div>
+
+  </div>
+</div>
+
+<!-- ============================ 8. EXPLORER ============================ -->
+<div class="panel" id="explorer">
+  <h2>8 &middot; Explore the results</h2>
+  <div class="body">
+
+    <p>
+      Every test protein is labelled with the similarity of its closest training
+      protein, then grouped into bands, and each band is scored separately. The
+      controls below switch between the two datasets, the three measures and the
+      three methods.
+    </p>
+
+    <div class="controls">
+      <label>Dataset
+        <select id="ds">
+          <option value="solubility">Solubility (DeepSol)</option>
+          <option value="enzyme">Enzyme (UniProt)</option>
+        </select>
+      </label>
+      <label>Measure
+        <select id="metric">
+          <option value="auc">ROC-AUC</option>
+          <option value="acc">Accuracy</option>
+          <option value="mcc">MCC</option>
+        </select>
+      </label>
+      <label class="chk"><input type="checkbox" id="s-kmer" checked> 3-mer</label>
+      <label class="chk"><input type="checkbox" id="s-comp" checked> composition</label>
+      <label class="chk"><input type="checkbox" id="s-lookup" checked> lookup</label>
+    </div>
+
+    <div class="chartwrap">
+      <canvas id="chart1" height="370"></canvas>
+    </div>
+    <div class="legend" id="legend1"></div>
+    <div class="readout" id="read1"
+         data-idle="Hover any point for its exact value and the number of proteins in that band. The squares on the left are test proteins with no detectable relative in training. The shaded column is the band above 90% identity.">
+    </div>
+
+    <div id="note-enzyme" class="note" style="display:none">
+      <span class="tag">Note</span>
+      The lookup baseline gives yes or no answers rather than probabilities, so
+      it has no ROC-AUC. Choose accuracy or MCC to compare it against the trained
+      models.
+    </div>
+
+    <div id="note-sol" class="warn" style="display:none">
+      <span class="tag">Note</span>
+      Per-band figures for the lookup baseline were computed for the enzyme run
+      but not saved for the solubility run, so that line is unavailable here.
+      Switching to the enzyme dataset shows it.
+    </div>
+
+    <h3>What to look for</h3>
+
+    <p>
+      On the solubility dataset the lines rise gently from left to right and then
+      drop sharply in the last band. On the enzyme dataset the random-split line
+      rises all the way to 0.944 and does not drop. The shaded column is the same
+      band in both cases, and the difference between those two shapes is the main
+      finding of the project.
+    </p>
+
+    <p>
+      Switching the measure to MCC on the enzyme dataset shows the second
+      finding. The two dotted lookup lines sit above every trained model in every
+      band, then fall to zero in the gutter on the left where there is no
+      relative to copy from.
+    </p>
+
+    <h3>Does the choice of bands matter?</h3>
+
+    <p>
+      Our band edges are 30, 40, 50, 70 and 90%. Two of those are principled, as
+      30% matches our clustering rule and 90% matches the threshold DeepSol used.
+      The others are not. We therefore repeated the analysis with different edges
+      to check that the shape does not depend on them.
+    </p>
+
+    <table class="wide">
+      <thead>
+        <tr><th>Band scheme (enzyme, random split, 3-mer)</th><th>Lowest band</th><th>Highest band</th><th>Rises throughout</th></tr>
+      </thead>
+      <tbody>
+        <tr><th>Ours: 30/40/50/70/90</th><td class="num">0.769</td><td class="num">0.944</td><td>yes</td></tr>
+        <tr><th>Even steps: 30/45/60/75/90</th><td class="num">0.769</td><td class="num">0.944</td><td>yes</td></tr>
+        <tr><th>Coarse: 40/70</th><td class="num">0.797</td><td class="num">0.932</td><td>yes</td></tr>
+        <tr><th>Fine: every 10% from 30 to 90</th><td class="num">0.769</td><td class="num">0.944</td><td>yes</td></tr>
+      </tbody>
+      <caption>
+        The rise with similarity appears under every scheme we tried, so it is
+        not an artefact of where we placed the boundaries.
+      </caption>
+    </table>
+
+  </div>
+</div>
+
+<!-- ============================ 9. CONCLUSIONS ============================ -->
+<div class="panel" id="conclusions">
+  <h2>9 &middot; Conclusions</h2>
+  <div class="body">
+
+    <p>
+      We set out to measure how much of a protein classifier's score comes from
+      copying labels off similar training proteins. We can now answer that, with
+      some qualifications.
+    </p>
+
+    <h3>Homology does inflate results, and we can put a number on it</h3>
+
+    <p>
+      On enzyme classification, removing close relatives from the test set costs
+      the 3-mer model 0.055 of ROC-AUC on average across five divisions of the
+      data, and costs the lookup baseline 0.154 of MCC. Performance rises
+      steadily with similarity, from 0.769 for proteins below 30% identity to
+      0.944 for those above 90%. Proteins with no relative at all are the hardest
+      of any group.
+    </p>
+
+    <h3>On DeepSol the same measurement returns nothing, for a reason</h3>
+
+    <p>
+      The identical pipeline finds no gap on the solubility dataset. This is not
+      because homology fails to help there. It is because two effects of similar
+      size cancel. The cluster-aware split keeps a large amount of partial
+      homology, while the random split keeps three times as many protein pairs
+      whose labels disagree. Those unreliable pairs sit above 90% identity, which
+      is where the dataset's own duplicate removal was applied.
+    </p>
+
+    <p>
+      Thus a single average score on this dataset cannot be interpreted without
+      also reporting results by similarity. Anyone comparing methods using the
+      aggregate number alone will understate how much homology is contributing.
+    </p>
+
+    <h3>Simple models are much worse than lookup, but not useless</h3>
+
+    <p>
+      On the enzyme task, copying the nearest relative's label beats both trained
+      models by a wide margin, on both splits and in every similarity band. Where
+      no relative exists, the situation reverses completely. The lookup baseline
+      drops to an MCC of exactly zero while the 3-mer model holds at 0.357 to
+      0.461. Thus these models do learn something that transfers to unfamiliar
+      proteins, and it is worth measuring, but on this task it is worth less than
+      homology wherever homology is available.
+    </p>
+
+    <h3>The feature representation decides whether any of this is visible</h3>
+
+    <p>
+      Amino acid composition shows no reliable gap on either dataset. Across five
+      divisions its average gap is 0.004 with a spread of 0.008, and two of the
+      five are negative. A study using only composition features would have
+      reported a null result even on the clean dataset. Everything we can claim
+      rests on the 3-mer model.
+    </p>
+
+  </div>
+</div>
+
+<!-- ============================ 10. LIMITATIONS ============================ -->
+<div class="panel" id="limits">
+  <h2>10 &middot; Limitations</h2>
+  <div class="body">
+
+    <p>
+      Each item below weakens one of the claims above. We list them because a
+      result is only as useful as the reader's ability to judge how far it goes.
+    </p>
+
+    <h3>The cluster-aware split is not free of homology</h3>
+    <p>
+      8.9% of its test proteins on solubility, and 11.8% on enzyme, still have a
+      closest match that meets our own clustering criteria. On enzyme the figure
+      rises to 18.0% if any qualifying match counts rather than only the closest.
+      This happens because MMseqs2 clustering is greedy, meaning it assigns each
+      sequence to a representative without comparing every possible pair. The
+      cluster-aware scores are therefore slightly optimistic, and the analysis by
+      similarity band is the more reliable view.
+    </p>
+
+    <h3>Only one similarity threshold was tried</h3>
+    <p>
+      Everything uses 30% identity with 80% coverage. A 50% threshold is the
+      obvious check and we did not run it, because it requires redoing the
+      clustering, the splits and every model fit. We expect a looser threshold to
+      group more proteins and therefore produce a stricter split, but we have not
+      measured it.
+    </p>
+
+    <h3>Weak models were a deliberate choice, and it cost us</h3>
+    <p>
+      Logistic regression on counts of short subsequences is far below the state
+      of the art, which uses protein language models. We chose it so that the
+      comparison between splits would be attributable to the split alone. The
+      cost is visible in the composition results, which show no reliable effect
+      on either dataset. A stronger model might show a larger gap, or might
+      generalise better and show a smaller one. We cannot tell from this work.
+    </p>
+
+    <h3>The explanation for the label collapse is inferred, not proven</h3>
+    <p>
+      The change in label agreement happens at 90% identity, which is where
+      DeepSol applied its duplicate removal. That is strong circumstantial
+      evidence but the preprocessing code is not published, so we cannot confirm
+      the mechanism.
+    </p>
+
+    <h3>Regularisation was tuned once, not per fold</h3>
+    <p>
+      In the five-fold variance check, the regularisation strength chosen on the
+      first fold was reused for the others. This slightly favours the first fold,
+      which is the one that produced the largest gap. Tuning within each fold
+      would be more correct and would most likely reduce the reported spread
+      rather than increase it.
+    </p>
+
+    <h3>Bands differ in size and in label balance</h3>
+    <p>
+      The cluster-aware split's 70 to 90% band holds 386 proteins on solubility
+      and 718 on enzyme, so estimates there carry much more uncertainty than the
+      large bands. Label balance also varies between bands, which means accuracy
+      should only be compared within a band and never across them. The no-relative
+      group shows why. Only 14.6% of its proteins are enzymes, so the lookup
+      baseline reaches 85.4% accuracy there purely by calling everything a
+      non-enzyme, while its MCC is zero.
+    </p>
+
+    <h3>Best-case thresholds were found using the test set</h3>
+    <p>
+      The threshold sweep in section 4 picks the best threshold by looking at the
+      test set, which is not a legitimate procedure. Those figures are an upper
+      limit on what tuning could achieve, not a result. The conclusion we draw
+      from them is only that the available gain is small.
+    </p>
+
+    <h3>The enzyme negatives are defined by absence of evidence</h3>
+    <p>
+      A protein with no EC number is usually one that nobody has tested, not one
+      shown not to be an enzyme. Requiring a described function and confirmed
+      existence reduces this problem but does not remove it.
+    </p>
+
+    <h3>A limit that applies to this whole area of work</h3>
+    <p>
+      Solubility labels of this kind record whether an experiment finished, not
+      whether a protein is soluble. Records frequently show that work stopped
+      without giving a reason, so an insoluble label can mean genuine clumping or
+      can mean the project was abandoned. This places a ceiling on accuracy that
+      no modelling choice can get past, and it is the reason we treat the 18.6%
+      disagreement figure as a real constraint rather than a footnote.
+    </p>
+
+  </div>
+</div>
+
+<!-- ============================ 11. REPRO ============================ -->
+<div class="panel" id="repro">
+  <h2>11 &middot; Reproducing this</h2>
+  <div class="body">
+
+    <p>
+      All code, the pipeline script and the saved results are in the project
+      repository:
+      <a href="https://github.com/adnair06/homology-leakage-study">github.com/adnair06/homology-leakage-study</a>
+    </p>
+
+    <p>
+      The enzyme experiment runs from one script that takes the dataset as
+      configuration. The solubility experiment is a numbered series of notebooks.
+      Both perform the same stages.
+    </p>
+
+    <pre><code># environment
+python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install pandas numpy scipy scikit-learn matplotlib pyarrow
+
+# MMseqs2 is a compiled program, not a Python package
+wget https://mmseqs.com/latest/mmseqs-linux-avx2.tar.gz
+tar xvfz mmseqs-linux-avx2.tar.gz
+export PATH="$PWD/mmseqs/bin:$PATH"
+
+# whole pipeline on a configured dataset
+python homology_pipeline.py --config task.json
+
+# or one stage at a time
+python homology_pipeline.py --steps 3-4</code></pre>
+
+    <h3>Stages</h3>
+    <ol>
+      <li>Load the data, attach labels, report label balance, duplicates, alphabet and length distribution.</li>
+      <li>Apply the length and character filters, checking that no sequence is emptied.</li>
+      <li>Write the sequences in <strong>FASTA</strong> format, which is the plain text format these tools expect, then cluster with MMseqs2.</li>
+      <li>Report the cluster structure: how many clusters, how many contain a single sequence, and the largest.</li>
+      <li>Build the cluster-aware split first, then match the random split to it.</li>
+      <li>Build the composition and 3-mer features.</li>
+      <li>Search every test protein against the training set, then derive the lookup baseline and the similarity bands.</li>
+      <li>Fit the logistic regressions, choosing regularisation strength by cluster-aware cross-validation inside the training set.</li>
+      <li>Score by band and draw the figures.</li>
+    </ol>
+
+    <h3>Settings</h3>
+    <table class="wide">
+      <tbody>
+        <tr><th>Clustering</th><td style="text-align:left"><code>mmseqs easy-cluster --min-seq-id 0.3 -c 0.8 --cov-mode 0</code></td></tr>
+        <tr><th>Search</th><td style="text-align:left"><code>mmseqs easy-search --format-output "query,target,fident,alnlen,qcov,tcov,evalue,bits"</code></td></tr>
+        <tr><th>Splits</th><td style="text-align:left"><code>StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)</code>, cluster-aware built first</td></tr>
+        <tr><th>Features</th><td style="text-align:left">20 composition fractions, and all 8,000 3-mers stored sparsely, each normalised to sum to one</td></tr>
+        <tr><th>Models</th><td style="text-align:left">Logistic regression, L2 penalty, <code>liblinear</code> solver for the sparse 3-mer features</td></tr>
+        <tr><th>Threshold</th><td style="text-align:left">Fixed at 0.5, not tuned (see section 4)</td></tr>
+      </tbody>
+    </table>
+
+    <div class="note">
+      <span class="tag">Where the per-band figures come from</span>
+      The enzyme run originally reported only ROC-AUC per band. The accuracy,
+      MCC and lookup baseline figures shown here were recomputed from the saved
+      outputs, namely <code>splits.parquet</code>, <code>best_hits.parquet</code>
+      and <code>preds_logistic.npz</code>. That recomputation reproduces all four
+      reported aggregate ROC-AUC values and all fourteen reported band sizes
+      exactly, which is what allows us to trust the figures derived alongside
+      them.
+    </div>
+
+    <div class="note">
+      <span class="tag">A problem worth recording</span>
+      When the 3-mer features are normalised to sum to one, each individual value
+      is around 0.003. At the default regularisation strength the model stopped
+      after six iterations with every predicted probability below 0.5. It
+      therefore predicted the common label for all but 2 of 13,885 test proteins,
+      giving an F1 of 0.0007, while still reporting a ROC-AUC of 0.65. The
+      ordering of proteins was fine and only the threshold was wrong. Weakening
+      the regularisation fixed the predictions and barely changed the ROC-AUC.
+      This is a useful reminder that ROC-AUC and F1 fail in different ways, and
+      that one can look healthy while the other does not.
+    </div>
+
+  </div>
+</div>
+
+</div><!-- /main -->
+</div><!-- /page -->
+
+<footer>
+  Every figure on this page is computed from the pipeline output. None are
+  estimated. Where a number was not produced by a run, the page says so rather
+  than filling the gap.
+</footer>
+
+<script src="data.js"></script>
+<script src="chart.js"></script>
+<script>
+(function () {
+  const bands = ["<30%", "30-40%", "40-50%", "50-70%", "70-90%", ">90%"];
+  const cv   = document.getElementById("chart1");
+  const read = document.getElementById("read1");
+  const dsEl = document.getElementById("ds");
+  const mEl  = document.getElementById("metric");
+  const kEl  = document.getElementById("s-kmer");
+  const cEl  = document.getElementById("s-comp");
+  const lEl  = document.getElementById("s-lookup");
+  const noteEnz = document.getElementById("note-enzyme");
+
+  function rowsToPts(rows, metric) {
+    if (!rows) return null;
+    const by = {};
+    rows.forEach(r => { by[r.band] = r; });
+    const pts = bands.map(b => {
+      const r = by[b];
+      if (!r || r[metric] == null) return null;
+      return { v: r[metric], n: r.n, band: b };
+    });
+    const nh = by["no hit"];
+    return {
+      pts,
+      noHit: nh && nh[metric] != null
+             ? { v: nh[metric], n: nh.n, band: "no homolog" } : null
+    };
+  }
+
+  function render() {
+    const ds = dsEl.value;
+    const metric = mEl.value;
+    noteEnz.style.display = (ds === "enzyme" && lEl.checked) ? "" : "none";
+    document.getElementById("note-sol").style.display =
+      (ds === "solubility" && lEl.checked) ? "" : "none";
+
+    const want = [];
+    if (kEl.checked) want.push(["kmer",   "solid",  "3-mer"]);
+    if (cEl.checked) want.push(["comp",   "dashed", "composition"]);
+    if (lEl.checked) want.push(["lookup", "dotted", "lookup"]);
+
+    const series = [];
+    [["random", C_RANDOM], ["clustered", C_CLUSTERED]].forEach(([sp, col]) => {
+      want.forEach(([feat, style, fname]) => {
+        const got = rowsToPts(RESULTS[ds][sp][feat], metric);
+        if (!got) return;
+        if (got.pts.every(p => p === null) && !got.noHit) return;
+        series.push({
+          pts: got.pts, noHit: got.noHit, color: col,
+          style, label: sp + ", " + fname, split: sp, feat: fname
+        });
+      });
+    });
+
+    // band sizes, random/clustered, from whichever feature set is present
+    const src  = RESULTS[ds].random.kmer    || RESULTS[ds].random.comp;
+    const srcC = RESULTS[ds].clustered.kmer || RESULTS[ds].clustered.comp;
+    const nOf = (rows, b) => {
+      const r = rows.find(x => x.band === b);
+      return r ? r.n.toLocaleString() : "";
+    };
+    const bandN = bands.map(b => nOf(src, b) + " / " + nOf(srcC, b));
+
+    const allV = [];
+    series.forEach(s => {
+      s.pts.forEach(p => { if (p) allV.push(p.v); });
+      if (s.noHit) allV.push(s.noHit.v);
+    });
+
+    if (!allV.length) {
+      const w = cv.clientWidth || 640;
+      const ctx = setupCanvas(cv, w, 86);
+      ctx.strokeStyle = "#c3d8c3";
+      ctx.strokeRect(0.5, 0.5, w - 1, 85);
+      ctx.fillStyle = "#3d6b47";
+      ctx.font = "13px Verdana, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("Not computed for this combination.", w / 2, 43);
+      cv._hit = [];
+      document.getElementById("legend1").innerHTML =
+        '<span style="color:#3d6b47">Nothing plotted.</span>';
+      read.innerHTML =
+        "This measure was not saved for this dataset. See the note below. " +
+        "The page leaves the gap visible rather than filling it.";
+      return;
+    }
+
+    let lo = Math.min(...allV), hi = Math.max(...allV);
+    const pad = Math.max((hi - lo) * 0.14, 0.02);
+    lo = Math.floor((lo - pad) * 20) / 20;
+    hi = Math.ceil((hi + pad) * 20) / 20;
+    if (metric === "mcc") { lo = Math.min(lo, -0.05); }
+
+    const ticks = [];
+    const stepT = (hi - lo) > 0.3 ? 0.1 : 0.05;
+    for (let t = lo; t <= hi + 1e-9; t += stepT) ticks.push(Math.round(t * 100) / 100);
+
+    const names = { auc: "ROC-AUC", acc: "Accuracy", mcc: "MCC" };
+    const refs  = { auc: 0.5, acc: null, mcc: 0 };
+
+    drawBandChart(cv, {
+      bands, bandN, series,
+      yMin: lo, yMax: hi, ticks,
+      refLine: refs[metric],
+      refLabel: metric === "auc" ? "chance" : (metric === "mcc" ? "no relationship" : ""),
+      xTitle: "sequence identity to nearest training protein  (n = random / clustered)",
+      xTitleShort: "identity to nearest training protein",
+      yTitle: names[metric],
+      showNoHit: series.some(s => s.noHit),
+      highlightLast: true,
+      height: 370
+    });
+
+    document.getElementById("legend1").innerHTML = series.map(s =>
+      '<span><i style="border-top-style:' + s.style +
+      ';border-top-color:' + s.color + '"></i>' + s.label + '</span>'
+    ).join("");
+
+    read.innerHTML = read.dataset.idle;
+  }
+
+  attachHover(cv, read, h =>
+    "<b>" + h.s.split + ", " + h.s.feat + "</b> &middot; " +
+    h.band + " &middot; " +
+    mEl.options[mEl.selectedIndex].text + " " +
+    h.p.v.toFixed(3) + " &middot; n = " + h.p.n.toLocaleString()
+  );
+
+  [dsEl, mEl, kEl, cEl, lEl].forEach(el => el.addEventListener("change", render));
+  window.addEventListener("resize", render);
+  render();
+
+  /* ---- chart 2: label agreement, enzyme vs solubility ---- */
+  const cv2 = document.getElementById("chart2");
+  const read2 = document.getElementById("read2");
+
+  function agSeries(ds, split, color, label) {
+    const rows = AGREEMENT[ds] && AGREEMENT[ds][split];
+    if (!rows) return null;
+    const by = {};
+    rows.forEach(r => { by[r.band] = r; });
+    return {
+      pts: bands.map(b => by[b] ? { v: by[b].v, n: by[b].n, band: b } : null),
+      noHit: null, color, style: "solid", label, split: label, feat: "agreement"
+    };
+  }
+
+  function render2() {
+    const series = [
+      agSeries("enzyme", "random", C_RANDOM, "enzyme (UniProt)"),
+      agSeries("solubility", "random", C_CLUSTERED, "solubility (DeepSol)")
+    ].filter(Boolean);
+
+    const src = AGREEMENT.enzyme.random, srcS = AGREEMENT.solubility.random;
+    const nOf = (rows, b) => {
+      const r = rows.find(x => x.band === b);
+      return r ? r.n.toLocaleString() : "";
+    };
+
+    drawBandChart(cv2, {
+      bands,
+      bandN: bands.map(b => nOf(src, b) + " / " + nOf(srcS, b)),
+      series,
+      yMin: 0, yMax: 1.05,
+      ticks: [0, 0.2, 0.4, 0.6, 0.8, 1.0],
+      refLine: 0.5,
+      refLabel: "coin flip",
+      xTitle: "sequence identity to nearest training protein  (n = enzyme / solubility)",
+      xTitleShort: "identity to nearest training protein",
+      yTitle: "label agreement",
+      showNoHit: false,
+      highlightLast: true,
+      height: 300
+    });
+
+    document.getElementById("legend2").innerHTML = series.map(s =>
+      '<span><i style="border-top-style:solid;border-top-color:' +
+      s.color + '"></i>' + s.label + '</span>'
+    ).join("");
+
+    read2.innerHTML = read2.dataset.idle;
+  }
+
+  attachHover(cv2, read2, h =>
+    "<b>" + h.s.label + "</b> &middot; " + h.band +
+    " &middot; agreement " + h.p.v.toFixed(3) +
+    " &middot; n = " + h.p.n.toLocaleString()
+  );
+
+  window.addEventListener("resize", render2);
+  render2();
+})();
+</script>
+</body>
+</html>
